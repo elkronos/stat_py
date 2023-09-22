@@ -37,4 +37,31 @@ To run this script, ensure you have the following libraries installed:
 - matplotlib
 - seaborn
 
+## T-Test And Assumptions Checker
 
+This Python script provides utility functions to perform both independent and dependent t-tests. The script utilizes libraries such as `numpy`, `scipy`, `matplotlib`, and `logging`.
+
+### Key Features
+
+1. **T-Test**: Offers functions to perform independent and dependent t-tests with options for one-tailed or two-tailed tests.
+2. **Normality and Variance Check**: Includes functions to check the normality of the samples and the equality of variances.
+3. **Input Validation**: Validates the input parameters for tail and direction.
+4. **Plotting Means**: Plots the means of the two samples with error bars.
+
+### Utility Functions
+
+- `check_normality(sample1, sample2)`: Checks the normality of two input samples using the Shapiro-Wilk test.
+- `check_variance(sample1, sample2)`: Checks the equality of variances of two input samples using Levene's test.
+- `validate_input(tail, direction)`: Validates the input parameters for tail and direction.
+- `perform_ttest(sample1, sample2, sample="independent", tail="two", direction=None)`: Wrapper function to perform an independent or dependent t-test.
+- `independent_ttest(sample1, sample2, tail="two", direction=None)`: Perform an independent t-test.
+- `dependent_ttest(sample1, sample2, tail="two", direction=None)`: Perform a dependent t-test.
+- `plot_means(sample1, sample2, filename=None)`: Plots the means of the two samples with error bars.
+
+### Dependencies
+
+To run this script, ensure you have the following libraries installed:
+- numpy
+- scipy
+- matplotlib
+- logging

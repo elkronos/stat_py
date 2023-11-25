@@ -37,6 +37,72 @@ To run this script, ensure you have the following libraries installed:
 - matplotlib
 - seaborn
 
+
+## MNIST Classifier with Early Stopping
+
+This Python script builds and trains a neural network to classify handwritten digits using the MNIST dataset. It leverages PyTorch for model construction and training, with an implementation of early stopping for enhanced training efficiency.
+
+### Key Features
+
+1. **MNIST Dataset Loading and Preprocessing**: Loads the MNIST dataset, applies transformations like random rotations and flips, and normalizes the data.
+2. **Neural Network Construction**: Defines a multi-layer neural network with dropout layers to prevent overfitting.
+3. **Training with Early Stopping**: Implements a training loop with early stopping based on validation loss to prevent overtraining.
+4. **Performance Metrics**: Calculates accuracy and displays a confusion matrix for performance evaluation.
+
+### Neural Network Architecture
+
+The script defines a `NeuralNetwork` class with the following layers:
+- Linear layer (784 to 256 neurons) with ReLU activation and dropout
+- Linear layer (256 to 128 neurons) with ReLU activation and dropout
+- Linear layer (128 to 64 neurons) with ReLU activation and dropout
+- Output linear layer (64 to 10 neurons)
+
+### Training Process
+
+The script trains the model using the Adam optimizer and a step learning rate scheduler. The training loop includes:
+- Loss computation using Cross-Entropy Loss
+- Backpropagation and optimizer step
+- Validation loss calculation for early stopping
+- Accuracy and confusion matrix computation for each epoch
+
+### Dependencies
+
+To run this script, ensure you have the following libraries installed:
+- torch
+- torchvision
+- sklearn
+- numpy
+
+
+## Polychoric Correlation
+
+This Python script calculates the polychoric correlation coefficient between two ordinal variables. It's specifically designed to handle datasets where the underlying variables are assumed to follow a bivariate normal distribution. The script uses the `numpy` and `scipy` libraries to perform the calculations.
+
+### Key Features
+
+1. **Polychoric Correlation Calculation**: Computes the polychoric correlation coefficient, which is useful for understanding relationships between ordinal variables.
+2. **Data Preprocessing**: Includes functionality for preprocessing data, such as removing rows and columns with zero marginal.
+3. **Thresholds Calculation**: Determines the optimal threshold values for the ordinal variables.
+4. **Maximum Likelihood Estimation**: Uses Maximum Likelihood Estimation (MLE) for computing the polychoric correlation.
+5. **Standard Error and Confidence Interval Calculation**: Optionally calculates standard errors and confidence intervals for the correlation coefficient.
+
+### Utility Functions
+
+- `polychor(x, y=None, ML=False, std_err=False, maxcor=0.9999, start=None, thresholds=False)`: Main function to compute the polychoric correlation. Parameters:
+  - `x`, `y`: Input arrays or ordinal data.
+  - `ML`: If set to True, uses MLE for estimation.
+  - `std_err`: If set to True, calculates the standard error.
+  - `maxcor`: Maximum correlation threshold.
+  - `start`: Starting values for optimization.
+  - `thresholds`: If set to True, returns the calculated thresholds.
+
+### Dependencies
+
+To run this script, ensure you have the following libraries installed:
+- numpy
+- scipy
+
+
 ## T-Test And Assumptions Checker
 
 This Python script provides utility functions to perform both independent and dependent t-tests. The script utilizes libraries such as `numpy`, `scipy`, `matplotlib`, and `logging`.

@@ -103,6 +103,38 @@ To run this script, ensure you have the following libraries installed:
 - scipy
 
 
+## Robust ANOVA and Posthoc Tests
+
+This Python script offers comprehensive functions to perform various types of ANOVA (Analysis of Variance) tests, including General Linear Model (GLM) ANOVA, Two-Way ANOVA, Repeated Measures ANOVA, and the Mann-Whitney U test for non-parametric data. It utilizes libraries such as `pandas`, `numpy`, `scipy.stats`, `statsmodels.api`, and `logging`.
+
+### Key Features
+
+1. **Various ANOVA Tests**: Supports GLM ANOVA, Two-Way ANOVA, Repeated Measures ANOVA, and Mann-Whitney U tests.
+2. **Normality and Homogeneity Checks**: Functions to check the normality of data (Shapiro-Wilk test) and homogeneity of variances (Levene's test).
+3. **Tukey HSD Posthoc Test**: If ANOVA results are significant, perform Tukey's Honestly Significant Difference posthoc test.
+4. **Robust Analysis**: Capable of handling both parametric and non-parametric data.
+
+### Utility Functions
+
+- `check_normality(*groups)`: Checks the normality of given groups using the Shapiro-Wilk test.
+- `check_homogeneity(*groups)`: Checks the homogeneity of variances across given groups using Levene's test.
+- `glm_anova(groups)`: Performs GLM ANOVA on given groups.
+- `tukey_hsd_posthoc(data, response_column, group_column)`: Performs Tukey's HSD posthoc test.
+- `mann_whitney_test(groups)`: Performs the Mann-Whitney U test for non-parametric data comparison.
+- `two_way_anova(data, formula, typ=2)`: Performs a Two-Way ANOVA test.
+- `repeated_measures_anova(data, formula, subject_column)`: Performs Repeated Measures ANOVA.
+- `robust_anova(groups=None, data=None, test_type='GLM', formula=None, subject_column=None, typ=2)`: Wrapper function to perform the specified type of ANOVA test.
+
+### Dependencies
+
+To run this script, ensure you have the following libraries installed:
+- pandas
+- numpy
+- scipy.stats
+- statsmodels.api
+- logging
+
+
 ## T-Test And Assumptions Checker
 
 This Python script provides utility functions to perform both independent and dependent t-tests. The script utilizes libraries such as `numpy`, `scipy`, `matplotlib`, and `logging`.

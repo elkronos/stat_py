@@ -38,6 +38,33 @@ To run this script, ensure you have the following libraries installed:
 - seaborn
 
 
+## Exponential Smoothing and Forecasting for Time Series Data
+
+This Python script provides a utility function for applying second-order exponential smoothing to time series data and computing forecasts l-steps ahead from each point in the series. It fits a linear model to the initial set of data points to derive starting values for smoothing. The function tests a range of alpha values, computes smoothing and forecasts for each, and selects the optimal alpha that minimizes the sum of squared errors. Optionally, it can plot the original data points alongside the forecasts for visual comparison.
+
+### Key Features
+
+1. **Exponential Smoothing**: Applies second-order exponential smoothing to time series data.
+2. **Forecasting**: Computes forecasts l-steps ahead from each point in the series.
+3. **Alpha Optimization**: Tests a range of alpha values and selects the optimal one that minimizes the sum of squared errors.
+4. **Visualization**: Optionally plots the original data points alongside the forecasts for visual comparison.
+
+### Utility Functions
+
+- `initial_smoothing_values(beta0, beta1, alphas)`: Computes initial smoothing values S1_0 and S2_0.
+- `compute_forecast(alpha, Pt, S1_0, S2_0, l)`: Computes forecast for a given alpha.
+- `plot_results(Pt, optimal_forecasts)`: Plots the original data points alongside the forecasts.
+- `exponential_smoother(Pt, k, alpha_range, l, plot=False)`: Applies second-order exponential smoothing to time series data, tests a range of alpha values, and computes forecasts l-steps ahead.
+
+### Dependencies
+
+To run this script, ensure you have the following libraries installed:
+- numpy
+- pandas
+- matplotlib
+- scikit-learn
+
+
 ## MNIST Classifier with Early Stopping
 
 This Python script builds and trains a neural network to classify handwritten digits using the MNIST dataset. It leverages PyTorch for model construction and training, with an implementation of early stopping for enhanced training efficiency.

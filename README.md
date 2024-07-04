@@ -1,6 +1,57 @@
 # stat_py
 This repo contains statistics functions made in python.
 
+
+## Detect Outliers and Visualize
+
+This Python script offers utility functions for detecting outliers in datasets using various methods and visualizing the results. The script uses libraries such as `numpy`, `pandas`, `scipy`, `scikit-learn`, `matplotlib`, and `seaborn`.
+
+### Key Features
+
+1. **Outlier Detection Methods**: The script provides multiple methods to detect outliers in datasets, including:
+
+    - **Z-score**: Use when the data is normally distributed and has no significant outliers.
+    - **Tukey's Fences**: Use when the data has outliers that are beyond the extremes of the quartiles.
+    - **Mahalanobis Distance**: Use when the data has a multivariate normal distribution with correlated features.
+    - **Grubbs' Test**: Use when the data has a univariate normal distribution and only one outlier.
+    - **Median Absolute Deviation (MAD)**: Use when the data has a skewed distribution and a few extreme values.
+    - **Iglewicz and Hoaglin's Modified Z-score**: Use when the data has a skewed distribution and a few extreme values.
+    - **Isolation Forest**: Use when the data has high-dimensional features and is not normally distributed.
+    - **DBSCAN**: Use when the data has a high density of points around the outliers.
+    - **One-Class SVM**: Use when the data has a few anomalies and is not easily separable.
+    - **Elliptic Envelope**: Use when the data has a multivariate normal distribution with few outliers.
+    - **Local Outlier Factor (LOF)**: Use when the data has a complex structure and outliers are not isolated.
+
+2. **Visualization**: The script includes functions to visualize the outliers detected by each method, providing both bar plots and scatter plots for comprehensive analysis.
+
+### Utility Functions
+
+- `validate_params(data, column)`: Validates the parameters to ensure the specified column is numeric and present in the dataset.
+- `z_outliers(data, column)`: Detects outliers using the Z-score method.
+- `tukey_outliers(data, column)`: Detects outliers using Tukey's Fences method.
+- `mahalanobis_outliers(data, column)`: Detects outliers using the Mahalanobis Distance method.
+- `grubbs_outliers(data, column)`: Detects outliers using Grubbs' Test.
+- `mad_outliers(data, column)`: Detects outliers using the Median Absolute Deviation method.
+- `iglewicz_hoaglin_outliers(data, column)`: Detects outliers using Iglewicz and Hoaglin's Modified Z-score method.
+- `isolation_forest_outliers(data, column)`: Detects outliers using the Isolation Forest method.
+- `dbscan_outliers(data, column)`: Detects outliers using the DBSCAN method.
+- `one_class_svm_outliers(data, column)`: Detects outliers using the One-Class SVM method.
+- `elliptic_envelope_outliers(data, column)`: Detects outliers using the Elliptic Envelope method.
+- `lof_outliers(data, column)`: Detects outliers using the Local Outlier Factor method.
+- `plot_outliers(data, outliers_dict)`: Visualizes the outliers detected by each method, providing bar plots and scatter plots.
+- `detect_outliers(data, methods=None, columns=None)`: Main function to detect outliers using specified methods and columns, and plot the results.
+
+### Dependencies
+
+To run this script, ensure you have the following libraries installed:
+- numpy
+- pandas
+- scipy
+- scikit-learn
+- matplotlib
+- seaborn
+
+
 ## Exponential Smoothing and Forecasting for Time Series Data
 
 This Python script provides a utility function for applying second-order exponential smoothing to time series data and computing forecasts l-steps ahead from each point in the series. It fits a linear model to the initial set of data points to derive starting values for smoothing. The function tests a range of alpha values, computes smoothing and forecasts for each, and selects the optimal alpha that minimizes the sum of squared errors. Optionally, it can plot the original data points alongside the forecasts for visual comparison.
@@ -62,56 +113,6 @@ To run this script, ensure you have the following libraries installed:
 - torchvision
 - sklearn
 - numpy
-
-
-## Outlier Detection and Visualization
-
-This Python script offers utility functions for detecting outliers in datasets using various methods and visualizing the results. The script uses libraries such as `numpy`, `pandas`, `scipy`, `scikit-learn`, `matplotlib`, and `seaborn`.
-
-### Key Features
-
-1. **Outlier Detection Methods**: The script provides multiple methods to detect outliers in datasets, including:
-
-    - **Z-score**: Use when the data is normally distributed and has no significant outliers.
-    - **Tukey's Fences**: Use when the data has outliers that are beyond the extremes of the quartiles.
-    - **Mahalanobis Distance**: Use when the data has a multivariate normal distribution with correlated features.
-    - **Grubbs' Test**: Use when the data has a univariate normal distribution and only one outlier.
-    - **Median Absolute Deviation (MAD)**: Use when the data has a skewed distribution and a few extreme values.
-    - **Iglewicz and Hoaglin's Modified Z-score**: Use when the data has a skewed distribution and a few extreme values.
-    - **Isolation Forest**: Use when the data has high-dimensional features and is not normally distributed.
-    - **DBSCAN**: Use when the data has a high density of points around the outliers.
-    - **One-Class SVM**: Use when the data has a few anomalies and is not easily separable.
-    - **Elliptic Envelope**: Use when the data has a multivariate normal distribution with few outliers.
-    - **Local Outlier Factor (LOF)**: Use when the data has a complex structure and outliers are not isolated.
-
-2. **Visualization**: The script includes functions to visualize the outliers detected by each method, providing both bar plots and scatter plots for comprehensive analysis.
-
-### Utility Functions
-
-- `validate_params(data, column)`: Validates the parameters to ensure the specified column is numeric and present in the dataset.
-- `z_outliers(data, column)`: Detects outliers using the Z-score method.
-- `tukey_outliers(data, column)`: Detects outliers using Tukey's Fences method.
-- `mahalanobis_outliers(data, column)`: Detects outliers using the Mahalanobis Distance method.
-- `grubbs_outliers(data, column)`: Detects outliers using Grubbs' Test.
-- `mad_outliers(data, column)`: Detects outliers using the Median Absolute Deviation method.
-- `iglewicz_hoaglin_outliers(data, column)`: Detects outliers using Iglewicz and Hoaglin's Modified Z-score method.
-- `isolation_forest_outliers(data, column)`: Detects outliers using the Isolation Forest method.
-- `dbscan_outliers(data, column)`: Detects outliers using the DBSCAN method.
-- `one_class_svm_outliers(data, column)`: Detects outliers using the One-Class SVM method.
-- `elliptic_envelope_outliers(data, column)`: Detects outliers using the Elliptic Envelope method.
-- `lof_outliers(data, column)`: Detects outliers using the Local Outlier Factor method.
-- `plot_outliers(data, outliers_dict)`: Visualizes the outliers detected by each method, providing bar plots and scatter plots.
-- `detect_outliers(data, methods=None, columns=None)`: Main function to detect outliers using specified methods and columns, and plot the results.
-
-### Dependencies
-
-To run this script, ensure you have the following libraries installed:
-- numpy
-- pandas
-- scipy
-- scikit-learn
-- matplotlib
-- seaborn
 
 
 ## Polychoric Correlation

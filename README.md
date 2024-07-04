@@ -1,43 +1,6 @@
 # stat_py
 This repo contains statistics functions made in python.
 
-
-## Linear Regression and Assumptions Checker
-
-This Python script offers utility functions for performing linear regression and checking various assumptions related to the linear regression model. The script uses libraries such as `numpy`, `pandas`, `statsmodels`, `scipy`, `matplotlib`, and `seaborn`.
-
-### Key Features
-
-1. **Linear Regression**: The script performs linear regression using the Ordinary Least Squares (OLS) method.
-2. **Assumption Checks**: The code includes functions to check five primary assumptions:
-    - Linearity
-    - Normality of residuals
-    - Homoscedasticity (constant variance of residuals)
-    - Independence of residuals
-    - Absence of multicollinearity
-
-### Utility Functions
-
-- `check_linearity(X, y, predictions)`: Visualizes the relationships between variables using a pairplot.
-- `check_normality(residuals)`: Checks the normality of residuals using a histogram and the Shapiro-Wilk test.
-- `check_homoscedasticity(X, predictions, residuals)`: Checks for homoscedasticity using a scatter plot and the Breusch-Pagan test.
-- `check_independence(residuals)`: Checks the independence of residuals using a plot and the Ljung-Box test.
-- `check_multicollinearity(X)`: Checks for multicollinearity using the Variance Inflation Factor (VIF) and a correlation matrix heatmap.
-- `plot_regression_model(X, y, predictions)`: Plots the regression model with observed values, predicted values, and the regression line.
-- `make_predictions(model, new_data)`: Predicts the outcome using a fitted model.
-- `linear_regression_and_check_assumptions(X, y)`: Performs the linear regression, plots the results, and checks all assumptions.
-
-### Dependencies
-
-To run this script, ensure you have the following libraries installed:
-- numpy
-- pandas
-- statsmodels
-- scipy
-- matplotlib
-- seaborn
-
-
 ## Exponential Smoothing and Forecasting for Time Series Data
 
 This Python script provides a utility function for applying second-order exponential smoothing to time series data and computing forecasts l-steps ahead from each point in the series. It fits a linear model to the initial set of data points to derive starting values for smoothing. The function tests a range of alpha values, computes smoothing and forecasts for each, and selects the optimal alpha that minimizes the sum of squared errors. Optionally, it can plot the original data points alongside the forecasts for visual comparison.
@@ -101,6 +64,56 @@ To run this script, ensure you have the following libraries installed:
 - numpy
 
 
+## Outlier Detection and Visualization
+
+This Python script offers utility functions for detecting outliers in datasets using various methods and visualizing the results. The script uses libraries such as `numpy`, `pandas`, `scipy`, `scikit-learn`, `matplotlib`, and `seaborn`.
+
+### Key Features
+
+1. **Outlier Detection Methods**: The script provides multiple methods to detect outliers in datasets, including:
+
+    - **Z-score**: Use when the data is normally distributed and has no significant outliers.
+    - **Tukey's Fences**: Use when the data has outliers that are beyond the extremes of the quartiles.
+    - **Mahalanobis Distance**: Use when the data has a multivariate normal distribution with correlated features.
+    - **Grubbs' Test**: Use when the data has a univariate normal distribution and only one outlier.
+    - **Median Absolute Deviation (MAD)**: Use when the data has a skewed distribution and a few extreme values.
+    - **Iglewicz and Hoaglin's Modified Z-score**: Use when the data has a skewed distribution and a few extreme values.
+    - **Isolation Forest**: Use when the data has high-dimensional features and is not normally distributed.
+    - **DBSCAN**: Use when the data has a high density of points around the outliers.
+    - **One-Class SVM**: Use when the data has a few anomalies and is not easily separable.
+    - **Elliptic Envelope**: Use when the data has a multivariate normal distribution with few outliers.
+    - **Local Outlier Factor (LOF)**: Use when the data has a complex structure and outliers are not isolated.
+
+2. **Visualization**: The script includes functions to visualize the outliers detected by each method, providing both bar plots and scatter plots for comprehensive analysis.
+
+### Utility Functions
+
+- `validate_params(data, column)`: Validates the parameters to ensure the specified column is numeric and present in the dataset.
+- `z_outliers(data, column)`: Detects outliers using the Z-score method.
+- `tukey_outliers(data, column)`: Detects outliers using Tukey's Fences method.
+- `mahalanobis_outliers(data, column)`: Detects outliers using the Mahalanobis Distance method.
+- `grubbs_outliers(data, column)`: Detects outliers using Grubbs' Test.
+- `mad_outliers(data, column)`: Detects outliers using the Median Absolute Deviation method.
+- `iglewicz_hoaglin_outliers(data, column)`: Detects outliers using Iglewicz and Hoaglin's Modified Z-score method.
+- `isolation_forest_outliers(data, column)`: Detects outliers using the Isolation Forest method.
+- `dbscan_outliers(data, column)`: Detects outliers using the DBSCAN method.
+- `one_class_svm_outliers(data, column)`: Detects outliers using the One-Class SVM method.
+- `elliptic_envelope_outliers(data, column)`: Detects outliers using the Elliptic Envelope method.
+- `lof_outliers(data, column)`: Detects outliers using the Local Outlier Factor method.
+- `plot_outliers(data, outliers_dict)`: Visualizes the outliers detected by each method, providing bar plots and scatter plots.
+- `detect_outliers(data, methods=None, columns=None)`: Main function to detect outliers using specified methods and columns, and plot the results.
+
+### Dependencies
+
+To run this script, ensure you have the following libraries installed:
+- numpy
+- pandas
+- scipy
+- scikit-learn
+- matplotlib
+- seaborn
+
+
 ## Polychoric Correlation
 
 This Python script calculates the polychoric correlation coefficient between two ordinal variables. It's specifically designed to handle datasets where the underlying variables are assumed to follow a bivariate normal distribution. The script uses the `numpy` and `scipy` libraries to perform the calculations.
@@ -128,6 +141,42 @@ This Python script calculates the polychoric correlation coefficient between two
 To run this script, ensure you have the following libraries installed:
 - numpy
 - scipy
+
+
+## Regression and Assumptions Checker
+
+This Python script offers utility functions for performing linear regression and checking various assumptions related to the linear regression model. The script uses libraries such as `numpy`, `pandas`, `statsmodels`, `scipy`, `matplotlib`, and `seaborn`.
+
+### Key Features
+
+1. **Linear Regression**: The script performs linear regression using the Ordinary Least Squares (OLS) method.
+2. **Assumption Checks**: The code includes functions to check five primary assumptions:
+    - Linearity
+    - Normality of residuals
+    - Homoscedasticity (constant variance of residuals)
+    - Independence of residuals
+    - Absence of multicollinearity
+
+### Utility Functions
+
+- `check_linearity(X, y, predictions)`: Visualizes the relationships between variables using a pairplot.
+- `check_normality(residuals)`: Checks the normality of residuals using a histogram and the Shapiro-Wilk test.
+- `check_homoscedasticity(X, predictions, residuals)`: Checks for homoscedasticity using a scatter plot and the Breusch-Pagan test.
+- `check_independence(residuals)`: Checks the independence of residuals using a plot and the Ljung-Box test.
+- `check_multicollinearity(X)`: Checks for multicollinearity using the Variance Inflation Factor (VIF) and a correlation matrix heatmap.
+- `plot_regression_model(X, y, predictions)`: Plots the regression model with observed values, predicted values, and the regression line.
+- `make_predictions(model, new_data)`: Predicts the outcome using a fitted model.
+- `linear_regression_and_check_assumptions(X, y)`: Performs the linear regression, plots the results, and checks all assumptions.
+
+### Dependencies
+
+To run this script, ensure you have the following libraries installed:
+- numpy
+- pandas
+- statsmodels
+- scipy
+- matplotlib
+- seaborn
 
 
 ## Robust ANOVA and Posthoc Tests

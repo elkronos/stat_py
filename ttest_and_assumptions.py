@@ -6,10 +6,7 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.WARNING)
 
-# Define constants
-SIGNIFICANCE_LEVEL = 0.05
-
-def check_normality(sample1, sample2):
+def check_normality(sample1, sample2, significance_level=0.05):
     """
     Check the normality of two input samples using the Shapiro-Wilk test.
 
@@ -17,6 +14,8 @@ def check_normality(sample1, sample2):
     ----------
     sample1, sample2 : array-like
         Input samples.
+    significance_level : float, optional
+        Significance level for the normality test. Default is 0.05.
 
     Returns
     -------
@@ -26,12 +25,13 @@ def check_normality(sample1, sample2):
     _, p1 = stats.shapiro(sample1)
     _, p2 = stats.shapiro(sample2)
     
-    if p1 < SIGNIFICANCE_LEVEL or p2 < SIGNIFICANCE_LEVEL:
-        logging.warning("Data may not be normally distributed")
+    if p1 < significance_level or p2 < significance_level:
+        logging.warning(f"Data may not be normally distributed. p-values: {p1:.4f}, {p2:.4f}")
+        logging.warning("Note: For large samples, the test may reject normality even for approximately normal data.")
         return False
     return True
 
-def check_variance(sample1, sample2):
+def check_variance(sample1, sample2, significance_level=0.05):
     """
     Checks the equality of variances of two input samples using Levene's test.
 
@@ -39,6 +39,8 @@ def check_variance(sample1, sample2):
     ----------
     sample1, sample2 : array-like
         Input samples.
+    significance_level : float, optional
+        Significance level for the variance test. Default is 0.05.
 
     Returns
     -------
@@ -47,8 +49,8 @@ def check_variance(sample1, sample2):
     """
     _, p = stats.levene(sample1, sample2)
     
-    if p < SIGNIFICANCE_LEVEL:
-        logging.warning("Variances are not equal")
+    if p < significance_level:
+        logging.warning(f"Variances are not equal. p-value: {p:.4f}")
         return False
     return True
 
@@ -83,7 +85,7 @@ def validate_input(tail, direction):
     if tail == "one" and direction is None:
         raise ValueError("Direction should be specified for a one-tailed test.")
 
-def perform_ttest(sample1, sample2, sample="independent", tail="two", direction=None):
+def perform_ttest(sample1, sample2, sample="independent", tail="two", direction=None, significance_level=0.05):
     """
     Wrapper function to perform an independent or dependent t-test.
 
@@ -97,6 +99,8 @@ def perform_ttest(sample1, sample2, sample="independent", tail="two", direction=
         Specifies the type of t-test, should be "one" or "two". Default is "two".
     direction : str or None, optional
         Specifies the direction of a one-tailed test, should be "greater", "less", or None. Default is None.
+    significance_level : float, optional
+        Significance level for assumption tests. Default is 0.05.
 
     Returns
     -------
@@ -105,17 +109,17 @@ def perform_ttest(sample1, sample2, sample="independent", tail="two", direction=
     """
     validate_input(tail, direction)
     
-    if not check_normality(sample1, sample2):
+    if not check_normality(sample1, sample2, significance_level):
         logging.warning("At least one of the samples is not normally distributed, results may be unreliable")
     
     if sample == "dependent":
         return dependent_ttest(sample1, sample2, tail=tail, direction=direction)
     elif sample == "independent":
-        return independent_ttest(sample1, sample2, tail=tail, direction=direction)
+        return independent_ttest(sample1, sample2, tail=tail, direction=direction, significance_level=significance_level)
     else:
         raise ValueError("Invalid value for sample: {}. It should be 'dependent' or 'independent'.".format(sample))
 
-def independent_ttest(sample1, sample2, tail="two", direction=None):
+def independent_ttest(sample1, sample2, tail="two", direction=None, significance_level=0.05):
     """
     Perform an independent t-test.
 
@@ -127,14 +131,17 @@ def independent_ttest(sample1, sample2, tail="two", direction=None):
         Specifies the type of t-test, should be "one" or "two". Default is "two".
     direction : str or None, optional
         Specifies the direction of a one-tailed test, should be "greater", "less", or None. Default is None.
+    significance_level : float, optional
+        Significance level for assumption tests. Default is 0.05.
 
     Returns
     -------
     tuple
         t-statistic and the p-value.
     """
-    equal_var = check_variance(sample1, sample2)
+    equal_var = check_variance(sample1, sample2, significance_level)
     
+    # If equal_var is False, scipy will automatically use Welch's t-test
     t_stat, p_value = stats.ttest_ind(sample1, sample2, equal_var=equal_var)
     
     if tail == "one":
@@ -188,7 +195,8 @@ def plot_means(sample1, sample2, filename=None):
     means = [np.mean(sample1), np.mean(sample2)]
     errors = [stats.sem(sample1), stats.sem(sample2)]
 
-    plt.bar(['Sample 1', 'Sample 2'], means, yerr=errors, color=['blue', 'green'])
+    plt.figure(figsize=(10, 6))
+    plt.bar(['Sample 1', 'Sample 2'], means, yerr=errors, color=['blue', 'green'], capsize=5)
     plt.ylabel('Mean')
     plt.title('Means of the two samples with error bars')
     if filename:

@@ -1,5 +1,3 @@
-# An attempt to remake this in python: https://github.com/elkronos/public_examples/blob/main/examples/exponential_smoother.R
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -18,7 +16,7 @@ def compute_forecast(alpha, Pt, S1_0, S2_0, l):
     S1_t[0] = S1_0
     S2_t[0] = S2_0
     forecasts = np.zeros(len(Pt))
-
+    errors = np.zeros(len(Pt))
     for i in range(1, len(Pt)):
         S1_t[i] = alpha * Pt[i] + (1 - alpha) * S1_t[i - 1]
         S2_t[i] = alpha * S1_t[i] + (1 - alpha) * S2_t[i - 1]
@@ -28,8 +26,8 @@ def compute_forecast(alpha, Pt, S1_0, S2_0, l):
         b_val = (alpha / (1 - alpha)) * (S1_t[i] - S2_t[i])
         if i + l < len(Pt):
             forecasts[i + l] = a_val + b_val * l
-
-    return forecasts, (Pt[k:] - (2 * S1_t[k:] - S2_t[k:]))**2
+            errors[i + l] = (Pt[i + l] - forecasts[i + l])**2
+    return forecasts, errors
 
 def plot_results(Pt, optimal_forecasts):
     """Plot the original data points alongside the forecasts."""
@@ -50,8 +48,8 @@ def exponential_smoother(Pt, k, alpha_range, l, plot=False):
     beta0 = model.intercept_
     beta1 = model.coef_[0]
     
-    # Generate alphas, avoiding zero
-    alphas = np.arange(alpha_range[0] + 0.01, min(alpha_range[1], 0.99), 0.01)
+    # Generate alphas, avoiding zero and one
+    alphas = np.linspace(alpha_range[0] + 0.01, min(alpha_range[1], 0.99), num=100)
     
     # Compute initial values for smoothing
     S1_0, S2_0 = initial_smoothing_values(beta0, beta1, alphas)
@@ -75,7 +73,10 @@ def exponential_smoother(Pt, k, alpha_range, l, plot=False):
     if plot:
         plot_results(Pt, optimal_forecasts)
     
-    return {'alpha_opt': alpha_opt, 'Forecasts': optimal_forecasts}
+    # Return only future forecasts
+    future_forecasts = optimal_forecasts[len(Pt):]
+    
+    return {'alpha_opt': alpha_opt, 'Forecasts': future_forecasts}
 
 # Example usage
 Pt = np.array([12, 15, 14, 16, 19, 20, 22, 25, 24, 23])

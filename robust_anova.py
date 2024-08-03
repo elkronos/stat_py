@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from scipy.stats import f_oneway, mannwhitneyu, levene, shapiro
 import statsmodels.api as sm
-from statsmodels.formula.api import ols
+from statsmodels.formula.api import ols, mixedlm
 from statsmodels.stats.anova import AnovaRM
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 import logging
@@ -123,7 +123,7 @@ def two_way_anova(data, formula, typ=2):
     
     if factor_names:
         combined_groups = data[factor_names].apply(lambda row: '_'.join(row.values.astype(str)), axis=1)
-        groups = [data['response'][combined_groups == level] for level in combined_groups.unique()]
+        groups = [data[formula.split('~')[0].strip()][combined_groups == level] for level in combined_groups.unique()]
 
         check_homogeneity(*groups)
     else:
@@ -151,7 +151,9 @@ def repeated_measures_anova(data, formula, subject_column):
     residuals = result.resid
     check_normality(residuals)
 
-    rm_anova = AnovaRM(data, 'response', subject_column, within=['time'])
+    dependent_var = formula.split('~')[0].strip()
+    within_factors = [factor.strip() for factor in formula.split('~')[1].strip().split('+')]
+    rm_anova = AnovaRM(data, dependent_var, subject_column, within=within_factors)
     rm_result = rm_anova.fit()
 
     return result.summary(), rm_result
@@ -184,51 +186,42 @@ def robust_anova(groups=None, data=None, test_type='GLM', formula=None, subject_
         raise ValueError("Invalid test type. Choose 'GLM', 'Mann-Whitney', 'Two-way', or 'Repeated Measures'.")
 
 
-# Generate example data
+# Example usage:
+
+# Mann-Whitney U Test
 group1 = np.random.normal(0, 1, 30)
 group2 = np.random.normal(1, 1, 30)
-# Perform Mann-Whitney U Test
 print(robust_anova(groups=[group1, group2], test_type='Mann-Whitney'))
 
-
-# Generate example data
+# Two-Way ANOVA
 df = pd.DataFrame({
     'response': np.random.randn(60),
     'factor1': np.repeat(['A', 'B'], 30),
     'factor2': np.tile(['C', 'D', 'E'], 20)
 })
-# Perform Two-Way ANOVA
 print(robust_anova(data=df, formula='response ~ C(factor1) + C(factor2) + C(factor1):C(factor2)', test_type='Two-way'))
 
-
-# Generate example data
+# Repeated Measures ANOVA
 df = pd.DataFrame({
     'response': np.random.randn(90),
     'time': np.tile(['T1', 'T2', 'T3'], 30),
     'subject': np.repeat(np.arange(30), 3)
 })
-# Perform Repeated Measures ANOVA
 print(robust_anova(data=df, formula='response ~ time', subject_column='subject', test_type='Repeated Measures'))
 
-
-# Generate example data for one-way ANOVA
+# One-way ANOVA (GLM) with Tukey HSD post-hoc test
 group1 = np.random.normal(0, 1, 30)
 group2 = np.random.normal(1, 1, 30)
 group3 = np.random.normal(2, 1, 30)
 
-# Perform GLM ANOVA
 anova_result = robust_anova(groups=[group1, group2, group3], test_type='GLM')
 print(anova_result)
 
-# If ANOVA is significant, perform Tukey HSD Posthoc test
 if anova_result['p_value'] < 0.05:
-    # Preparing data for Tukey HSD
     df_tukey = pd.DataFrame({
         'response': np.concatenate([group1, group2, group3]),
         'group': np.repeat(['Group1', 'Group2', 'Group3'], 30)
     })
-
-    # Perform Tukey HSD Posthoc test
     tukey_result = tukey_hsd_posthoc(df_tukey, 'response', 'group')
     print(tukey_result)
 else:

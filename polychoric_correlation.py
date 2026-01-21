@@ -1,16 +1,18 @@
 """
-Polychoric correlation estimator with vectorized BVN probabilities, robust input
-handling for ordinal data, and profile-likelihood standard errors.
+Polychoric correlation + correlogram (heatmap) utilities + unit tests.
 
-Updated to avoid:
-- SciPy DeprecationWarning for L-BFGS-B `disp`/`iprint` by removing `disp` option.
-- RuntimeWarning from SciPy numdiff (inf - inf) by using a large finite penalty
-  instead of returning np.inf for invalid threshold configurations.
+Key implementation notes:
+- Uses L-BFGS-B bounds for rho (and finite bounds for thresholds) rather than clipping rho
+  inside the objective, to keep the objective smooth for the optimizer.
+- Does NOT clip the probability matrix P to EPS (which can break sum-to-1). Instead, EPS
+  is applied only inside log() and tiny numeric negatives in P are clipped to 0.
+- ML standard error is curvature-based in rho holding thresholds fixed at their MLEs.
+  (Not a full profile-likelihood SE.)
 
-Includes a UAT (unit tests) suite at the bottom. Run this file directly to see
-an example and to execute the tests.
+Run this file directly to execute tests and show an example correlogram.
 
-Requires: numpy, scipy
+Requires: numpy, scipy, matplotlib
+Optional (for clustered correlogram ordering): scipy.cluster.hierarchy
 """
 
 import numpy as np
@@ -32,11 +34,11 @@ logger.setLevel(logging.INFO)
 # -----------------------------------
 # Constants
 # -----------------------------------
-EPS = 1e-8            # Epsilon to avoid log(0) and tiny negatives from numeric noise
+EPS = 1e-8
 DEFAULT_MAXCOR = 0.9999
 DEFAULT_BINS = 4
-LARGE_PENALTY = 1e50  # Large finite penalty for infeasible parameter proposals
-
+LARGE_PENALTY = 1e50
+THRESH_BOUND = 10.0
 
 # -----------------------------------
 # Data structures
@@ -57,25 +59,19 @@ class PolychoricResult:
     type: str = "polychoric"
 
     def __repr__(self) -> str:
-        """String representation of results."""
         result = f"Polychoric correlation: {self.rho:.4f}"
         if self.var_rho is not None:
-            std_err = np.sqrt(self.var_rho)
-            result += f" (SE: {std_err:.4f})"
+            result += f" (SE: {np.sqrt(self.var_rho):.4f})"
         return result
 
     def as_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for backward compatibility."""
         return {k: v for k, v in self.__dict__.items()}
-
 
 # -----------------------------------
 # Exceptions
 # -----------------------------------
 class ParameterError(ValueError):
-    """Exception raised for errors in the input parameters."""
     pass
-
 
 # -----------------------------------
 # Helpers for preprocessing
@@ -83,14 +79,13 @@ class ParameterError(ValueError):
 def _is_small_integer_ordinal(a: np.ndarray, max_levels: int = 12) -> bool:
     """
     Heuristic: treat arrays with a small number of integer-coded levels as ordinal.
-    Accepts int arrays or float arrays that are basically integers (e.g., 1.0, 2.0).
+    Accepts ints or floats that are basically integers (e.g., 1.0, 2.0).
     """
     if a.dtype.kind in "iu":
         uniq = np.unique(a)
         return 1 < uniq.size <= max_levels
     if a.dtype.kind == "f":
         ai = np.rint(a)
-        # allow NaNs; compare only finite
         mask = np.isfinite(a)
         if not np.any(mask):
             return False
@@ -101,15 +96,12 @@ def _is_small_integer_ordinal(a: np.ndarray, max_levels: int = 12) -> bool:
 
 
 def _crosstab_codes(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """
-    Fast crosstab for integer-coded ordinals.
-    """
+    """Fast crosstab for integer-coded ordinals."""
     x_vals, x_idx = np.unique(x, return_inverse=True)
     y_vals, y_idx = np.unique(y, return_inverse=True)
     tab = np.zeros((x_vals.size, y_vals.size), dtype=float)
     np.add.at(tab, (x_idx, y_idx), 1.0)
     return tab
-
 
 # -----------------------------------
 # Core probability computation
@@ -119,27 +111,13 @@ def compute_bvn_probabilities(rho: float,
                               col_thresholds: np.ndarray) -> np.ndarray:
     """
     Vectorized bivariate normal cell probabilities for an ordinal×ordinal table.
-    Builds all rectangle corners and evaluates multivariate_normal.cdf in batches.
-
-    Parameters
-    ----------
-    rho : float
-        Latent correlation.
-    row_thresholds, col_thresholds : np.ndarray
-        Strictly increasing thresholds.
-
-    Returns
-    -------
-    P : (R, C) ndarray
-        Cell probabilities, clipped to [EPS, 1].
+    Returns probabilities (not EPS-clipped). Clips only tiny numerical noise to [0,1].
     """
-    # Build finite bounds
     rB = np.concatenate(([-np.inf], row_thresholds, [np.inf]))
     cB = np.concatenate(([-np.inf], col_thresholds, [np.inf]))
     R = len(rB) - 1
     C = len(cB) - 1
 
-    # All corner combinations as flat arrays (upper/upper, lower/upper, upper/lower, lower/lower)
     rb_low  = np.repeat(rB[:-1], C)
     rb_high = np.repeat(rB[1:],  C)
     cb_low  = np.tile(cB[:-1],   R)
@@ -154,14 +132,9 @@ def compute_bvn_probabilities(rho: float,
     pts_ll = np.column_stack([rb_low,  cb_low ])
 
     def _cdf_batch(points: np.ndarray) -> np.ndarray:
-        """
-        Compute BVN CDF for an (N,2) array of points with fast paths for infinities.
-        Returns a 1D array of length N.
-        """
         out = np.empty(points.shape[0], dtype=float)
         x1, x2 = points[:, 0], points[:, 1]
 
-        # Masks for special infinite cases
         mask_neginf = (x1 == -np.inf) | (x2 == -np.inf)
         mask_pospos = (x1 ==  np.inf) & (x2 ==  np.inf)
         mask_x1inf  = (x1 ==  np.inf) & ~mask_pospos
@@ -170,20 +143,17 @@ def compute_bvn_probabilities(rho: float,
         out[mask_neginf] = 0.0
         out[mask_pospos] = 1.0
 
-        # Reductions: if x1 = +inf, CDF reduces to Φ(x2); if x2 = +inf, reduces to Φ(x1)
         if np.any(mask_x1inf):
             out[mask_x1inf] = norm.cdf(x2[mask_x1inf])
         if np.any(mask_x2inf):
             out[mask_x2inf] = norm.cdf(x1[mask_x2inf])
 
-        # The rest need true BVN cdf
         mask_rest = ~(mask_neginf | mask_pospos | mask_x1inf | mask_x2inf)
         if np.any(mask_rest):
             pts = points[mask_rest]
             try:
                 out[mask_rest] = multivariate_normal.cdf(pts, mean=mean, cov=cov)
             except Exception:
-                # Fallback to pointwise if vector call unsupported
                 out[mask_rest] = np.array(
                     [multivariate_normal.cdf(p, mean=mean, cov=cov) for p in pts],
                     dtype=float
@@ -195,10 +165,10 @@ def compute_bvn_probabilities(rho: float,
     F_hl = _cdf_batch(pts_hl)
     F_ll = _cdf_batch(pts_ll)
 
-    # Inclusion–exclusion for rectangle probabilities, then reshape
     P = (F_hh - F_lh - F_hl + F_ll).reshape(R, C)
-    return np.clip(P, EPS, 1.0)
-
+    P = np.maximum(P, 0.0)
+    P = np.minimum(P, 1.0)
+    return P
 
 # -----------------------------------
 # Likelihood pieces
@@ -211,23 +181,13 @@ def negative_log_likelihood(params: np.ndarray,
                             default_col_thresh: np.ndarray,
                             maxcor: float,
                             full_ml: bool) -> float:
-    """
-    Compute negative log-likelihood for optimization.
-
-    Parameters
-    ----------
-    params : np.ndarray
-        If full_ml:
-           [rho, row_thresh_1..R-1, col_thresh_1..C-1]
-        Else:
-           [rho]
-    """
-    rho = np.clip(params[0], -maxcor, maxcor)
+    rho = float(params[0])
+    if not (-maxcor <= rho <= maxcor):
+        return LARGE_PENALTY
 
     if full_ml and params.size > 1:
         row_thresh = params[1:n_row]
         col_thresh = params[n_row:n_row + n_col - 1]
-        # Enforce monotonic thresholds; infeasible → large finite penalty
         if np.any(np.diff(row_thresh) <= 0) or np.any(np.diff(col_thresh) <= 0):
             return LARGE_PENALTY
     else:
@@ -235,20 +195,14 @@ def negative_log_likelihood(params: np.ndarray,
         col_thresh = default_col_thresh
 
     P = compute_bvn_probabilities(rho, row_thresh, col_thresh)
-    return -np.sum(tab * np.log(P))
+    return -np.sum(tab * np.log(np.maximum(P, EPS)))
 
 
 def compute_degrees_of_freedom(n_row: int, n_col: int) -> int:
-    """Degrees of freedom for goodness-of-fit: RC - (R + C)"""
     return (n_row * n_col) - (n_row + n_col)
 
 
 def compute_chi_square(nll: float, tab: np.ndarray, n_total: float) -> float:
-    """
-    G^2 deviance comparing fitted model vs saturated model:
-    2 * ( -logL_fitted + logL_saturated )
-    Here nll = -logL_fitted; logL_saturated = sum n_ij log(n_ij / n_total)
-    """
     return 2.0 * (nll + np.sum(tab * np.log((tab + EPS) / n_total)))
 
 
@@ -260,22 +214,19 @@ def compute_standard_error_ml(opt_result: Any,
                               default_col_thresh: np.ndarray,
                               maxcor: float) -> Optional[float]:
     """
-    Profile-based SE for rho at the ML solution.
-
-    We hold the estimated thresholds fixed and approximate the second derivative
-    d2/d rho^2 of the (profile) NLL using a central difference. This avoids relying
-    on the limited-precision L-BFGS inverse-Hessian product.
+    Curvature-based variance estimate for rho at the ML solution, holding thresholds fixed.
+    Not full profile-likelihood.
     """
     try:
-        p = opt_result.x
-        rho_hat = float(np.clip(p[0], -maxcor, maxcor))
+        p = np.asarray(opt_result.x, dtype=float)
+        rho_hat = float(p[0])
         row_hat = p[1:n_row]
         col_hat = p[n_row:n_row + n_col - 1]
 
-        # Adaptive step size: smaller near the boundaries where curvature increases
         h = max(1e-4, 1e-2 * (1.0 - abs(rho_hat)))
 
-        def nll_at(r):
+        def nll_at(r: float) -> float:
+            r = float(np.clip(r, -maxcor, maxcor))
             return negative_log_likelihood(
                 np.concatenate(([r], row_hat, col_hat)),
                 tab, n_row, n_col, default_row_thresh, default_col_thresh,
@@ -283,22 +234,20 @@ def compute_standard_error_ml(opt_result: Any,
             )
 
         f0 = nll_at(rho_hat)
-        f1 = nll_at(np.clip(rho_hat + h, -maxcor, maxcor))
-        f2 = nll_at(np.clip(rho_hat - h, -maxcor, maxcor))
+        f1 = nll_at(rho_hat + h)
+        f2 = nll_at(rho_hat - h)
         d2f = (f1 - 2.0 * f0 + f2) / (h * h)
         if d2f <= 0 or not np.isfinite(d2f):
             return None
         return 1.0 / d2f
     except Exception as e:
-        logger.warning(f"Failed to compute profile SE for rho: {e}")
-        # Fall back to optimizer's inverse-Hessian product if available
+        logger.warning(f"Failed to compute curvature SE for rho: {e}")
         try:
             hess_inv = opt_result.hess_inv.todense() if hasattr(opt_result.hess_inv, "todense") else opt_result.hess_inv
-            var_rho = hess_inv[0, 0]
+            var_rho = float(hess_inv[0, 0])
             return var_rho if np.isfinite(var_rho) and var_rho > 0 else None
         except Exception:
             return None
-
 
 # -----------------------------------
 # Preprocessing (table construction)
@@ -306,14 +255,6 @@ def compute_standard_error_ml(opt_result: Any,
 def preprocess_data(x: Union[np.ndarray, list],
                     y: Optional[Union[np.ndarray, list]] = None,
                     bins: int = DEFAULT_BINS) -> Tuple[np.ndarray, int, int]:
-    """
-    Preprocess input data into a contingency table.
-
-    Behavior:
-    - If `y` is None: treat `x` as a precomputed table.
-    - If `x` and `y` look like small integer-coded ordinals: build a crosstab.
-    - Otherwise: fall back to histogram2d with the given `bins`.
-    """
     if y is None:
         tab = np.asarray(x, dtype=float)
     else:
@@ -330,19 +271,12 @@ def preprocess_data(x: Union[np.ndarray, list],
             raise ParameterError("No valid observations after removing NaNs.")
 
         if _is_small_integer_ordinal(x_array) and _is_small_integer_ordinal(y_array):
-            # Discrete ordinal → crosstab (preserves ordinal categories)
             tab = _crosstab_codes(np.rint(x_array).astype(int), np.rint(y_array).astype(int))
         else:
-            # Continuous-ish → equal-width histogram
             tab, _, _ = np.histogram2d(x_array, y_array, bins=[bins, bins])
 
-    # Remove all-zero rows/cols (no information)
     valid_rows = ~np.all(tab == 0, axis=1)
     valid_cols = ~np.all(tab == 0, axis=0)
-    if np.sum(~valid_rows) > 0:
-        logger.info(f"Removed {np.sum(~valid_rows)} rows with zero marginals.")
-    if np.sum(~valid_cols) > 0:
-        logger.info(f"Removed {np.sum(~valid_cols)} columns with zero marginals.")
     cleaned_tab = tab[valid_rows, :][:, valid_cols]
 
     n_row, n_col = cleaned_tab.shape
@@ -352,10 +286,6 @@ def preprocess_data(x: Union[np.ndarray, list],
 
 
 def compute_default_thresholds(tab: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Compute default thresholds from marginal distributions using inverse-normal
-    of cumulative proportions. Values clipped to (0.001, 0.999) to avoid infinities.
-    """
     n_total = np.sum(tab)
     if n_total == 0:
         raise ParameterError("Contingency table has no counts.")
@@ -363,18 +293,12 @@ def compute_default_thresholds(tab: np.ndarray) -> Tuple[np.ndarray, np.ndarray]
     col_sums = np.sum(tab, axis=0)
     row_cum_props = np.clip(np.cumsum(row_sums) / n_total, 0.001, 0.999)[:-1]
     col_cum_props = np.clip(np.cumsum(col_sums) / n_total, 0.001, 0.999)[:-1]
-    row_thresh = norm.ppf(row_cum_props)
-    col_thresh = norm.ppf(col_cum_props)
-    return row_thresh, col_thresh
+    return norm.ppf(row_cum_props), norm.ppf(col_cum_props)
 
 
 def validate_start_parameters(start: Union[float, Dict[str, Any]],
                               n_row: int,
                               n_col: int) -> Tuple[float, Optional[np.ndarray], Optional[np.ndarray]]:
-    """
-    Validate and extract starting parameter values.
-    Accepts either a numeric rho or a dict with keys: 'rho', 'row_thresholds', 'col_thresholds'
-    """
     if isinstance(start, dict):
         rho = start.get('rho', 0.0)
         row_thresh = start.get('row_thresholds')
@@ -401,7 +325,6 @@ def validate_start_parameters(start: Union[float, Dict[str, Any]],
             raise ParameterError("Column thresholds must be strictly increasing.")
     return float(rho), row_thresh, col_thresh
 
-
 # -----------------------------------
 # Public API
 # -----------------------------------
@@ -416,38 +339,6 @@ def polychoric_correlation(x: Union[np.ndarray, list],
                            return_dict: bool = False,
                            maxiter: int = 200,
                            tol: float = 1e-6) -> Union[float, Dict[str, Any], PolychoricResult]:
-    """
-    Compute polychoric correlation between ordinal variables.
-
-    Parameters
-    ----------
-    x, y : array-like or 2D contingency table if y is None
-    ML : bool
-        If True, jointly estimate rho and thresholds (full ML).
-        If False, do two-step: fixed thresholds from marginals, optimize rho only.
-    compute_std_err : bool
-        If True, compute variance of rho (SE^2).
-        For ML=True, uses a profile-curvature approach holding thresholds at MLEs.
-        For ML=False, uses numeric second derivative of NLL wrt rho.
-    maxcor : float
-        Maximum absolute correlation allowed (to avoid numerical singularities).
-    start : float or dict
-        Starting values. If dict, keys: 'rho', 'row_thresholds', 'col_thresholds'.
-    return_thresholds : bool
-        If True, return a PolychoricResult (instead of just rho).
-    bins : int
-        Number of bins for histogram if data aren't recognized as ordinal.
-    return_dict : bool
-        If True, return a dict instead of PolychoricResult (back-compat).
-    maxiter : int
-        Maximum iterations for optimizers.
-    tol : float
-        Tolerance for optimizers (ftol/xatol).
-
-    Returns
-    -------
-    float or dict or PolychoricResult
-    """
     tab, n_row, n_col = preprocess_data(x, y, bins)
     n_total = float(np.sum(tab))
     if n_total < (n_row + n_col - 1):
@@ -455,7 +346,6 @@ def polychoric_correlation(x: Union[np.ndarray, list],
 
     default_row_thresh, default_col_thresh = compute_default_thresholds(tab)
 
-    # Starting values
     if start is not None:
         init_rho, init_row_thresh, init_col_thresh = validate_start_parameters(start, n_row, n_col)
         if init_row_thresh is None:
@@ -468,7 +358,6 @@ def polychoric_correlation(x: Union[np.ndarray, list],
         init_col_thresh = default_col_thresh
 
     if ML:
-        # Preliminary scalar optimization for rho if near zero or None
         if init_rho is None or abs(init_rho) < 1e-6:
             res_prelim = minimize_scalar(
                 lambda r: negative_log_likelihood(
@@ -480,21 +369,24 @@ def polychoric_correlation(x: Union[np.ndarray, list],
                 options={'xatol': tol, 'maxiter': maxiter}
             )
             init_rho = float(res_prelim.x)
-            logger.info(f"Preliminary optimization for rho yielded: {init_rho:.6f}")
+            logger.debug(f"Preliminary optimization for rho yielded: {init_rho:.6f}")
 
         initial_params = np.concatenate(([init_rho], init_row_thresh, init_col_thresh)).astype(float)
+        bounds = [(-maxcor, maxcor)] + [(-THRESH_BOUND, THRESH_BOUND)] * ((n_row - 1) + (n_col - 1))
+
         opt_result = minimize(
             negative_log_likelihood,
             initial_params,
             args=(tab, n_row, n_col, default_row_thresh, default_col_thresh, maxcor, True),
             method='L-BFGS-B',
-            options={'maxiter': maxiter, 'ftol': tol}  # removed deprecated 'disp'
+            bounds=bounds,
+            options={'maxiter': maxiter, 'ftol': tol}
         )
         if not opt_result.success:
             warnings.warn(f"Optimization warning: {opt_result.message}")
 
         est_params = np.asarray(opt_result.x, dtype=float)
-        est_rho = float(np.clip(est_params[0], -maxcor, maxcor))
+        est_rho = float(est_params[0])
         est_row_thresh = est_params[1:n_row]
         est_col_thresh = est_params[n_row:n_row + n_col - 1]
 
@@ -518,7 +410,6 @@ def polychoric_correlation(x: Union[np.ndarray, list],
             optimization_message=str(opt_result.message)
         )
     else:
-        # Two-step: thresholds from marginals, optimize rho only
         res = minimize_scalar(
             lambda r: negative_log_likelihood(
                 np.array([r], dtype=float), tab, n_row, n_col,
@@ -528,14 +419,13 @@ def polychoric_correlation(x: Union[np.ndarray, list],
             method='bounded',
             options={'xatol': tol, 'maxiter': maxiter}
         )
-        est_rho = float(np.clip(res.x, -maxcor, maxcor))
+        est_rho = float(res.x)
         nll = float(res.fun)
         chisq = compute_chi_square(nll, tab, n_total)
         df = compute_degrees_of_freedom(n_row, n_col)
 
         var_rho = None
         if compute_std_err:
-            # Profile curvature in 1D (thresholds fixed)
             h = max(1e-4, 1e-2 * (1.0 - abs(est_rho)))
             f0 = negative_log_likelihood(np.array([est_rho], dtype=float), tab, n_row, n_col,
                                          default_row_thresh, default_col_thresh, maxcor, False)
@@ -568,112 +458,322 @@ def polychoric_correlation(x: Union[np.ndarray, list],
     else:
         return result
 
-
-# Alias for backward compatibility.
+# Alias
 polychor = polychoric_correlation
 
-
 # ===================================
-# UAT: Unit Tests using unittest
+# Correlogram utilities
+# ===================================
+import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgba
+
+try:
+    import pandas as pd  # optional
+except Exception:
+    pd = None
+
+
+def polychoric_corr_matrix(
+    data,
+    *,
+    labels=None,
+    ML=True,
+    bins=4,
+    maxcor=0.9999,
+    compute_std_err=False,
+    **polychor_kwargs
+):
+    """
+    Pairwise polychoric correlation matrix.
+
+    Returns:
+      - corr, labels
+      - or corr, se, labels if compute_std_err=True (se = std error matrix; NaN if unavailable)
+    """
+    if pd is not None and hasattr(data, "values") and hasattr(data, "columns"):
+        X = np.asarray(data.values)
+        if labels is None:
+            labels = [str(c) for c in data.columns]
+    else:
+        X = np.asarray(data)
+        if X.ndim != 2:
+            raise ValueError("data must be 2D: (n_samples, n_vars)")
+        if labels is None:
+            labels = [f"V{i+1}" for i in range(X.shape[1])]
+
+    p = X.shape[1]
+    corr = np.full((p, p), np.nan, dtype=float)
+    se = np.full((p, p), np.nan, dtype=float) if compute_std_err else None
+    np.fill_diagonal(corr, 1.0)
+    if compute_std_err:
+        np.fill_diagonal(se, 0.0)
+
+    for i in range(p):
+        for j in range(i + 1, p):
+            try:
+                if compute_std_err:
+                    res = polychoric_correlation(
+                        X[:, i], X[:, j],
+                        ML=ML,
+                        bins=bins,
+                        maxcor=maxcor,
+                        compute_std_err=True,
+                        return_thresholds=True,
+                        **polychor_kwargs
+                    )
+                    r = float(res.rho)
+                    s = float(np.sqrt(res.var_rho)) if res.var_rho is not None else np.nan
+                    corr[i, j] = corr[j, i] = r
+                    se[i, j] = se[j, i] = s
+                else:
+                    r = float(polychoric_correlation(
+                        X[:, i], X[:, j],
+                        ML=ML,
+                        bins=bins,
+                        maxcor=maxcor,
+                        **polychor_kwargs
+                    ))
+                    corr[i, j] = corr[j, i] = r
+            except Exception:
+                continue
+
+    if compute_std_err:
+        return corr, se, labels
+    return corr, labels
+
+
+def reorder_by_clustering(corr, labels):
+    """
+    Reorder variables using hierarchical clustering on distance = 1 - corr.
+    Requires SciPy.
+    """
+    from scipy.cluster.hierarchy import linkage, leaves_list
+    from scipy.spatial.distance import squareform
+
+    C = np.asarray(corr, dtype=float).copy()
+    C = np.where(np.isfinite(C), C, 0.0)
+    np.fill_diagonal(C, 1.0)
+
+    D = 1.0 - C
+    np.fill_diagonal(D, 0.0)
+
+    Z = linkage(squareform(D, checks=False), method="average")
+    order = leaves_list(Z)
+
+    return corr[np.ix_(order, order)], [labels[i] for i in order]
+
+
+def plot_correlogram_pro(
+    corr,
+    labels,
+    *,
+    title="Polychoric correlogram",
+    annotate=True,
+    decimals=2,
+    show_upper=False,
+    cluster=False,
+    figsize=(9, 7),
+    vmin=-1.0,
+    vmax=1.0,
+    cmap="coolwarm",
+    fontsize=9,
+):
+    """
+    Professional correlogram heatmap with:
+      - numbers rounded to `decimals`
+      - upper triangle fully blank (transparent) by default
+      - cleaner styling (no spines; x labels on top; tight layout)
+    """
+    C = np.array(corr, dtype=float)
+    labs = list(labels)
+
+    if cluster:
+        C, labs = reorder_by_clustering(C, labs)
+
+    mask = np.triu(np.ones_like(C, dtype=bool), k=1) if not show_upper else np.zeros_like(C, dtype=bool)
+    mask |= ~np.isfinite(C)
+    C_plot = np.ma.array(C, mask=mask)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.set_facecolor(fig.get_facecolor())
+
+    cmap_obj = plt.get_cmap(cmap).copy()
+    cmap_obj.set_bad(color=to_rgba(ax.get_facecolor(), alpha=0.0))
+
+    im = ax.imshow(
+        C_plot,
+        vmin=vmin,
+        vmax=vmax,
+        cmap=cmap_obj,
+        interpolation="nearest",
+        aspect="equal",
+    )
+
+    ax.set_title(title, pad=14)
+
+    ax.set_xticks(np.arange(len(labs)))
+    ax.set_yticks(np.arange(len(labs)))
+    ax.set_xticklabels(labs, rotation=45, ha="left")
+    ax.set_yticklabels(labs)
+
+    ax.xaxis.tick_top()
+    ax.tick_params(axis="both", which="major", length=0)
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Correlation")
+
+    if annotate:
+        fmt = f"{{:.{decimals}f}}"
+        for i in range(C.shape[0]):
+            for j in range(C.shape[1]):
+                if C_plot.mask[i, j]:
+                    continue
+                ax.text(
+                    j, i, fmt.format(C[i, j]),
+                    ha="center", va="center",
+                    fontsize=fontsize
+                )
+
+    fig.tight_layout()
+    return fig, ax
+
+"""
+# ===================================
+# Unit Tests
 # ===================================
 import unittest
 
-class TestPolychoricCorrelation(unittest.TestCase):
-    """Tests for polychoric correlation function."""
 
+class TestPolychoricCorrelation(unittest.TestCase):
     def setUp(self):
         np.random.seed(0)
         self.x = np.random.randint(1, 5, 100)
         self.y = np.random.randint(1, 5, 100)
-        # Data with known latent correlation ~0.7
-        z1 = np.random.normal(0, 1, 1000)
-        z2 = 0.7 * z1 + 0.7 * np.random.normal(0, 1, 1000)
+
+        # Latent correlation construction that enforces Corr(z1,z2)=rho
+        rho = 0.7
+        z1 = np.random.normal(0, 1, 2000)
+        e  = np.random.normal(0, 1, 2000)
+        z2 = rho * z1 + np.sqrt(1.0 - rho**2) * e
+
         self.correlated_x = np.digitize(z1, [-1, 0, 1])
         self.correlated_y = np.digitize(z2, [-1, 0, 1])
-        # A small sample that should trigger a ParameterError.
+
         self.small_x = np.array([1, 2])
         self.small_y = np.array([1, 2])
 
     def test_basic_usage(self):
-        """Test basic estimation works."""
         rho = polychor(self.x, self.y)
         self.assertTrue(-1 <= rho <= 1)
 
     def test_full_results(self):
-        """Test full results object."""
         result = polychor(self.x, self.y, return_thresholds=True)
         self.assertIsInstance(result, PolychoricResult)
         self.assertTrue(-1 <= result.rho <= 1)
 
     def test_dictionary_output(self):
-        """Test dictionary output format."""
         result = polychor(self.x, self.y, return_dict=True)
         self.assertIsInstance(result, dict)
         self.assertIn('rho', result)
 
     def test_standard_error(self):
-        """Test standard error computation (ML profile SE)."""
         result = polychor(self.x, self.y, compute_std_err=True)
         self.assertIsNotNone(result.var_rho)
         self.assertGreater(result.var_rho, 0)
 
     def test_known_correlation(self):
-        """Test with data having known correlation."""
-        rho = polychor(self.correlated_x, self.correlated_y)
-        self.assertAlmostEqual(rho, 0.7, delta=0.15)
+        rho_hat = polychor(self.correlated_x, self.correlated_y)
+        self.assertAlmostEqual(rho_hat, 0.7, delta=0.15)
 
     def test_contingency_table_input(self):
-        """Test with contingency table input."""
         tab, _, _ = np.histogram2d(self.x, self.y, bins=4)
         rho = polychor(tab)
         self.assertTrue(-1 <= rho <= 1)
 
     def test_small_sample_error(self):
-        """Test error handling with very small samples."""
         with self.assertRaises(ParameterError):
             polychor(self.small_x, self.small_y)
 
     def test_custom_bins(self):
-        """Test with custom bin count."""
         rho1 = polychor(self.x, self.y, bins=4)
         rho2 = polychor(self.x, self.y, bins=5)
         self.assertLess(abs(rho1 - rho2), 0.3)
 
     def test_two_step_vs_ml(self):
-        """Test two-step vs full ML estimation."""
         rho1 = polychor(self.x, self.y, ML=True)
         rho2 = polychor(self.x, self.y, ML=False)
         self.assertLess(abs(rho1 - rho2), 0.3)
 
     def test_start_parameter(self):
-        """Test with custom starting values."""
         rho = polychor(self.x, self.y, start=0.5)
         self.assertTrue(-1 <= rho <= 1)
 
     def test_nan_handling(self):
-        """Test handling of NaN values."""
         x_with_nan = self.x.astype(float)
         x_with_nan[0] = np.nan
         rho = polychor(x_with_nan, self.y)
         self.assertTrue(-1 <= rho <= 1)
 
     def test_discrete_ordinal_crosstab(self):
-        """Integer-coded 1..5 should be treated as ordinal, not binned."""
         x = np.random.randint(1, 6, 500)
         y = np.random.randint(1, 6, 500)
-        r1 = polychor(x, y, bins=20)  # bins ignored due to ordinal auto-detect
+        r1 = polychor(x, y, bins=20)
         r2 = polychor(x.astype(float), y.astype(float), bins=5)
         self.assertTrue(-1 <= r1 <= 1)
         self.assertTrue(-1 <= r2 <= 1)
 
+    def test_corr_matrix_and_plot(self):
+        # Smoke test: compute matrix and build a correlogram figure
+        X = np.column_stack([
+            np.random.randint(1, 6, 300),
+            np.random.randint(1, 6, 300),
+            np.random.randint(1, 6, 300),
+            np.random.randint(1, 6, 300),
+        ])
+        corr, labels = polychoric_corr_matrix(X, labels=["A", "B", "C", "D"], ML=True)
+        self.assertEqual(corr.shape, (4, 4))
+        fig, ax = plot_correlogram_pro(corr, labels, annotate=True, decimals=2, show_upper=False, cluster=False)
+        self.assertIsNotNone(fig)
+        self.assertIsNotNone(ax)
+        plt.close(fig)
+
 
 if __name__ == "__main__":
-    # Example usage.
-    np.random.seed(123)
-    x = np.random.randint(1, 5, 200)
-    y = np.random.randint(1, 5, 200)
-    result = polychoric_correlation(x, y, compute_std_err=True)
-    print(result)
+    # 1) Run tests first (so the plot appears at the end)
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestPolychoricCorrelation)
+    runner = unittest.TextTestRunner(verbosity=2)
+    test_result = runner.run(suite)
 
-    # Run tests.
-    unittest.main(argv=['first-arg-is-ignored'], exit=False)
+    # 2) Example: compute + display a correlogram AFTER tests complete
+    np.random.seed(123)
+    X = np.column_stack([
+        np.random.randint(1, 6, 400),
+        np.random.randint(1, 6, 400),
+        np.random.randint(1, 6, 400),
+        np.random.randint(1, 6, 400),
+        np.random.randint(1, 6, 400),
+    ])
+    labels = ["Item 1", "Item 2", "Item 3", "Item 4", "Item 5"]
+
+    corr, labels = polychoric_corr_matrix(X, labels=labels, ML=True)
+    fig, ax = plot_correlogram_pro(
+        corr, labels,
+        title="Polychoric correlogram",
+        annotate=True,
+        decimals=2,
+        show_upper=False,
+        cluster=True,     # requires SciPy; set False if you prefer natural order
+        cmap="coolwarm",
+        figsize=(8.5, 6.5),
+        fontsize=9,
+    )
+
+    plt.show()
+
+    # Optional: fail the process if tests failed (useful in CI)
+    # import sys
+    # sys.exit(0 if test_result.wasSuccessful() else 1)
+"""

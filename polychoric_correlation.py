@@ -6,8 +6,10 @@ Key implementation notes:
   inside the objective, to keep the objective smooth for the optimizer.
 - Does NOT clip the probability matrix P to EPS (which can break sum-to-1). Instead, EPS
   is applied only inside log() and tiny numeric negatives in P are clipped to 0.
-- ML standard error is curvature-based in rho holding thresholds fixed at their MLEs.
-  (Not a full profile-likelihood SE.)
+- ML standard error is the observed-information SE: the full Hessian of the
+  negative log-likelihood is formed on the joint parameter vector at the MLE
+  (by central finite differences with mixed partials), inverted, and the
+  (rho, rho) entry of the inverse is reported as Var(rho).
 
 Run this file directly to execute tests and show an example correlogram.
 
@@ -18,6 +20,7 @@ Optional (for clustered correlogram ordering): scipy.cluster.hierarchy
 import numpy as np
 from scipy.optimize import minimize, minimize_scalar
 from scipy.stats import norm, multivariate_normal
+from scipy.special import expit
 import logging
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple, Union, Any
@@ -37,8 +40,6 @@ logger.setLevel(logging.INFO)
 EPS = 1e-8
 DEFAULT_MAXCOR = 0.9999
 DEFAULT_BINS = 4
-LARGE_PENALTY = 1e50
-THRESH_BOUND = 10.0
 
 # -----------------------------------
 # Data structures
@@ -99,8 +100,8 @@ def _crosstab_codes(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Fast crosstab for integer-coded ordinals."""
     x_vals, x_idx = np.unique(x, return_inverse=True)
     y_vals, y_idx = np.unique(y, return_inverse=True)
-    tab = np.zeros((x_vals.size, y_vals.size), dtype=float)
-    np.add.at(tab, (x_idx, y_idx), 1.0)
+    flat = np.bincount(x_idx * y_vals.size + y_idx, minlength=x_vals.size * y_vals.size)
+    tab = flat.reshape(x_vals.size, y_vals.size).astype(float)
     return tab
 
 # -----------------------------------
@@ -112,6 +113,10 @@ def compute_bvn_probabilities(rho: float,
     """
     Vectorized bivariate normal cell probabilities for an ordinal×ordinal table.
     Returns probabilities (not EPS-clipped). Clips only tiny numerical noise to [0,1].
+
+    `multivariate_normal.cdf` handles infinite limits correctly (reducing to the
+    appropriate univariate CDF, or to 0/1 at the boundary corners), so no manual
+    masking of ±∞ rows/columns is required.
     """
     rB = np.concatenate(([-np.inf], row_thresholds, [np.inf]))
     cB = np.concatenate(([-np.inf], col_thresholds, [np.inf]))
@@ -131,44 +136,68 @@ def compute_bvn_probabilities(rho: float,
     pts_hl = np.column_stack([rb_high, cb_low ])
     pts_ll = np.column_stack([rb_low,  cb_low ])
 
-    def _cdf_batch(points: np.ndarray) -> np.ndarray:
-        out = np.empty(points.shape[0], dtype=float)
-        x1, x2 = points[:, 0], points[:, 1]
-
-        mask_neginf = (x1 == -np.inf) | (x2 == -np.inf)
-        mask_pospos = (x1 ==  np.inf) & (x2 ==  np.inf)
-        mask_x1inf  = (x1 ==  np.inf) & ~mask_pospos
-        mask_x2inf  = (x2 ==  np.inf) & ~mask_pospos
-
-        out[mask_neginf] = 0.0
-        out[mask_pospos] = 1.0
-
-        if np.any(mask_x1inf):
-            out[mask_x1inf] = norm.cdf(x2[mask_x1inf])
-        if np.any(mask_x2inf):
-            out[mask_x2inf] = norm.cdf(x1[mask_x2inf])
-
-        mask_rest = ~(mask_neginf | mask_pospos | mask_x1inf | mask_x2inf)
-        if np.any(mask_rest):
-            pts = points[mask_rest]
-            try:
-                out[mask_rest] = multivariate_normal.cdf(pts, mean=mean, cov=cov)
-            except Exception:
-                out[mask_rest] = np.array(
-                    [multivariate_normal.cdf(p, mean=mean, cov=cov) for p in pts],
-                    dtype=float
-                )
-        return out
-
-    F_hh = _cdf_batch(pts_hh)
-    F_lh = _cdf_batch(pts_lh)
-    F_hl = _cdf_batch(pts_hl)
-    F_ll = _cdf_batch(pts_ll)
+    F_hh = multivariate_normal.cdf(pts_hh, mean=mean, cov=cov)
+    F_lh = multivariate_normal.cdf(pts_lh, mean=mean, cov=cov)
+    F_hl = multivariate_normal.cdf(pts_hl, mean=mean, cov=cov)
+    F_ll = multivariate_normal.cdf(pts_ll, mean=mean, cov=cov)
 
     P = (F_hh - F_lh - F_hl + F_ll).reshape(R, C)
     P = np.maximum(P, 0.0)
     P = np.minimum(P, 1.0)
     return P
+
+# -----------------------------------
+# Threshold reparameterization
+# -----------------------------------
+# To keep the objective C-infinity (so L-BFGS-B's finite-difference gradients
+# behave), thresholds are optimized over an unconstrained parameterization:
+#   raw = [tau_1, delta_1, delta_2, ..., delta_{n-2}]
+# and reconstructed as
+#   thresh_k = tau_1 + sum_{j<k} softplus(delta_j)
+# Since softplus(.) > 0 for all real inputs, monotonicity is structural and
+# no penalty / bound is required.
+def _softplus(x: np.ndarray) -> np.ndarray:
+    """Numerically stable softplus: log(1 + exp(x))."""
+    return np.logaddexp(0.0, x)
+
+
+def _inv_softplus(y: np.ndarray) -> np.ndarray:
+    """
+    Inverse of softplus for y > 0:  x = log(exp(y) - 1) = log(expm1(y)).
+    Used to seed the optimizer from strictly increasing threshold guesses.
+    """
+    y = np.asarray(y, dtype=float)
+    return np.log(np.expm1(np.maximum(y, 1e-12)))
+
+
+def _reconstruct_thresholds(raw: np.ndarray, n_levels: int) -> np.ndarray:
+    """
+    Map unconstrained raw parameters [tau_1, delta_1, ..., delta_{n_levels-2}]
+    to a strictly increasing threshold vector of length (n_levels - 1).
+    """
+    if n_levels < 2:
+        raise ValueError("n_levels must be >= 2")
+    raw = np.asarray(raw, dtype=float)
+    tau1 = raw[0]
+    if n_levels == 2:
+        return np.array([tau1], dtype=float)
+    increments = _softplus(raw[1:])
+    return tau1 + np.concatenate(([0.0], np.cumsum(increments)))
+
+
+def _deconstruct_thresholds(thresh: np.ndarray) -> np.ndarray:
+    """
+    Inverse of _reconstruct_thresholds: convert a strictly increasing threshold
+    vector into the unconstrained (tau_1, delta_1, ..., delta_{n-2}) form so it
+    can be used as an L-BFGS-B starting point.
+    """
+    thresh = np.asarray(thresh, dtype=float)
+    if thresh.size == 1:
+        return thresh.copy()
+    diffs = np.diff(thresh)
+    deltas = _inv_softplus(diffs)
+    return np.concatenate(([thresh[0]], deltas))
+
 
 # -----------------------------------
 # Likelihood pieces
@@ -181,21 +210,181 @@ def negative_log_likelihood(params: np.ndarray,
                             default_col_thresh: np.ndarray,
                             maxcor: float,
                             full_ml: bool) -> float:
+    # rho is kept in [-maxcor, maxcor] structurally by the optimizer's bounds
+    # (L-BFGS-B for ML, bounded minimize_scalar for the two-step path), so no
+    # penalty branch is needed here. Threshold monotonicity is also structural
+    # via the softplus reparameterization, so the objective is C-infinity.
     rho = float(params[0])
-    if not (-maxcor <= rho <= maxcor):
-        return LARGE_PENALTY
 
     if full_ml and params.size > 1:
-        row_thresh = params[1:n_row]
-        col_thresh = params[n_row:n_row + n_col - 1]
-        if np.any(np.diff(row_thresh) <= 0) or np.any(np.diff(col_thresh) <= 0):
-            return LARGE_PENALTY
+        row_thresh = _reconstruct_thresholds(params[1:n_row], n_row)
+        col_thresh = _reconstruct_thresholds(params[n_row:n_row + n_col - 1], n_col)
     else:
         row_thresh = default_row_thresh
         col_thresh = default_col_thresh
 
     P = compute_bvn_probabilities(rho, row_thresh, col_thresh)
-    return -np.sum(tab * np.log(np.maximum(P, EPS)))
+    # Use the convention 0 · log 0 = 0 explicitly so empty cells contribute
+    # nothing (and so this matches the saturated term in compute_chi_square).
+    return -np.sum(np.where(tab > 0, tab * np.log(np.maximum(P, EPS)), 0.0))
+
+
+# -----------------------------------
+# Analytic gradient of the NLL (used by L-BFGS-B via jac=True)
+# -----------------------------------
+def _bvn_pdf(a: np.ndarray, b: np.ndarray, rho: float) -> np.ndarray:
+    """
+    Standard bivariate-normal density φ₂(a, b; ρ) evaluated elementwise.
+    Returns 0 wherever either argument is infinite (i.e. on the cell boundary
+    extensions ±∞ used by `compute_bvn_probabilities`).
+    """
+    out = np.zeros(a.shape, dtype=float)
+    finite = np.isfinite(a) & np.isfinite(b)
+    if np.any(finite):
+        a_f = a[finite]
+        b_f = b[finite]
+        one_minus_rho2 = 1.0 - rho * rho
+        z = (a_f * a_f - 2.0 * rho * a_f * b_f + b_f * b_f) / (2.0 * one_minus_rho2)
+        out[finite] = np.exp(-z) / (2.0 * np.pi * np.sqrt(one_minus_rho2))
+    return out
+
+
+def _dPhi2_da(a: np.ndarray, b: np.ndarray, rho: float) -> np.ndarray:
+    """
+    Closed form for ∂Φ₂(a, b; ρ)/∂a = φ(a) · Φ((b − ρa)/√(1 − ρ²)).
+    Returns 0 wherever a is infinite; b may be ±∞ (then Φ(...) → 1 or 0).
+    The symmetric partial w.r.t. b is obtained by swapping the arguments.
+    """
+    out = np.zeros(a.shape, dtype=float)
+    finite = np.isfinite(a)
+    if np.any(finite):
+        a_f = a[finite]
+        b_f = b[finite]
+        sqrt_1mr2 = np.sqrt(1.0 - rho * rho)
+        # b_f − ρ·a_f propagates ±∞ from b_f correctly through norm.cdf.
+        arg = (b_f - rho * a_f) / sqrt_1mr2
+        out[finite] = norm.pdf(a_f) * norm.cdf(arg)
+    return out
+
+
+def _grad_through_softplus(grad_thresh: np.ndarray, raw: np.ndarray) -> np.ndarray:
+    """
+    Chain-rule a gradient w.r.t. reconstructed thresholds back to a gradient
+    w.r.t. the unconstrained raw parameters used by the optimizer:
+        thresh[0] = raw[0]
+        thresh[k] = raw[0] + Σ_{j=1..k} softplus(raw[j])     (k ≥ 1)
+    so ∂thresh[k]/∂raw[0] = 1 and ∂thresh[k]/∂raw[j] = sigmoid(raw[j]) for 1 ≤ j ≤ k.
+    """
+    grad_thresh = np.asarray(grad_thresh, dtype=float)
+    raw = np.asarray(raw, dtype=float)
+    T = raw.size
+    if T == 0:
+        return np.zeros(0, dtype=float)
+    # rev_cumsum[j] = Σ_{k=j..T-1} grad_thresh[k]
+    rev_cumsum = np.cumsum(grad_thresh[::-1])[::-1]
+    out = np.empty(T, dtype=float)
+    out[0] = rev_cumsum[0]
+    if T > 1:
+        out[1:] = expit(raw[1:]) * rev_cumsum[1:]
+    return out
+
+
+def _negative_log_likelihood_and_grad(params: np.ndarray,
+                                      tab: np.ndarray,
+                                      n_row: int,
+                                      n_col: int) -> Tuple[float, np.ndarray]:
+    """
+    Joint NLL and analytic gradient over (rho, raw row params, raw col params)
+    for the full-ML path. Used by L-BFGS-B via `jac=True`, which avoids the
+    finite-difference gradient that would otherwise cost
+        O(1 + (R − 1) + (C − 1))
+    extra NLL evaluations per optimizer step (each NLL evaluation itself being
+    four batched BVN-CDF calls).
+
+    Closed forms used:
+        ∂Φ₂(a,b;ρ)/∂ρ = φ₂(a,b;ρ)
+        ∂Φ₂(a,b;ρ)/∂a = φ(a) · Φ((b − ρa)/√(1 − ρ²))
+        ∂Φ₂(a,b;ρ)/∂b = φ(b) · Φ((a − ρb)/√(1 − ρ²))
+    These are combined with the four-corner expression
+        P_{j,k} = Φ₂(a_high_j, b_high_k) − Φ₂(a_low_j, b_high_k)
+                − Φ₂(a_high_j, b_low_k) + Φ₂(a_low_j, b_low_k)
+    and chain-ruled through the softplus threshold reparameterization. Each
+    interior threshold τ^r_i (resp. τ^c_k) is the upper boundary of one row
+    (resp. column) and the lower boundary of the next, which is what produces
+    the W[i, :] − W[i+1, :] (resp. W[:, k] − W[:, k+1]) differences below.
+    """
+    rho = float(params[0])
+    raw_row = np.asarray(params[1:n_row], dtype=float)
+    raw_col = np.asarray(params[n_row:n_row + n_col - 1], dtype=float)
+    row_thresh = _reconstruct_thresholds(raw_row, n_row)
+    col_thresh = _reconstruct_thresholds(raw_col, n_col)
+
+    rB = np.concatenate(([-np.inf], row_thresh, [np.inf]))
+    cB = np.concatenate(([-np.inf], col_thresh, [np.inf]))
+    R, C = n_row, n_col
+
+    rb_low  = np.repeat(rB[:-1], C)
+    rb_high = np.repeat(rB[1:],  C)
+    cb_low  = np.tile(cB[:-1],   R)
+    cb_high = np.tile(cB[1:],    R)
+
+    mean = np.zeros(2)
+    cov  = np.array([[1.0, rho], [rho, 1.0]], dtype=float)
+
+    pts_hh = np.column_stack([rb_high, cb_high])
+    pts_lh = np.column_stack([rb_low,  cb_high])
+    pts_hl = np.column_stack([rb_high, cb_low ])
+    pts_ll = np.column_stack([rb_low,  cb_low ])
+
+    F_hh = multivariate_normal.cdf(pts_hh, mean=mean, cov=cov)
+    F_lh = multivariate_normal.cdf(pts_lh, mean=mean, cov=cov)
+    F_hl = multivariate_normal.cdf(pts_hl, mean=mean, cov=cov)
+    F_ll = multivariate_normal.cdf(pts_ll, mean=mean, cov=cov)
+
+    P_flat = F_hh - F_lh - F_hl + F_ll
+    P_flat = np.clip(P_flat, 0.0, 1.0)
+    P = P_flat.reshape(R, C)
+
+    nll = -np.sum(tab * np.log(np.maximum(P, EPS)))
+
+    # W[j, k] = ∂NLL/∂P[j, k] = -tab[j, k] / max(P[j, k], EPS).
+    W = -tab / np.maximum(P, EPS)
+
+    # ----- ∂NLL/∂ρ via Plackett's identity: ∂Φ₂/∂ρ = φ₂. -----
+    dP_drho = (
+        _bvn_pdf(rb_high, cb_high, rho)
+        - _bvn_pdf(rb_low,  cb_high, rho)
+        - _bvn_pdf(rb_high, cb_low,  rho)
+        + _bvn_pdf(rb_low,  cb_low,  rho)
+    )
+    grad_rho = float(np.sum(W.reshape(-1) * dP_drho))
+
+    # ----- ∂NLL/∂row_thresh[i]: row threshold i is a_high in row i and
+    # a_low in row i+1, with opposite signs in the four-corner sum. -----
+    grad_row_thresh = np.zeros(n_row - 1)
+    cb_high_arr = cB[1:]
+    cb_low_arr  = cB[:-1]
+    for i in range(n_row - 1):
+        tau_arr = np.full(C, row_thresh[i])
+        g = _dPhi2_da(tau_arr, cb_high_arr, rho) - _dPhi2_da(tau_arr, cb_low_arr, rho)
+        grad_row_thresh[i] = float(np.sum(g * (W[i, :] - W[i + 1, :])))
+
+    # ----- ∂NLL/∂col_thresh[k]: same pattern with axes swapped.
+    # Using ∂Φ₂(a, b; ρ)/∂b = ∂Φ₂(b, a; ρ)/∂a, so we reuse `_dPhi2_da`. -----
+    grad_col_thresh = np.zeros(n_col - 1)
+    rb_high_arr = rB[1:]
+    rb_low_arr  = rB[:-1]
+    for k in range(n_col - 1):
+        tau_arr = np.full(R, col_thresh[k])
+        g = _dPhi2_da(tau_arr, rb_high_arr, rho) - _dPhi2_da(tau_arr, rb_low_arr, rho)
+        grad_col_thresh[k] = float(np.sum(g * (W[:, k] - W[:, k + 1])))
+
+    # ----- Chain rule through the softplus reparameterization. -----
+    grad_raw_row = _grad_through_softplus(grad_row_thresh, raw_row)
+    grad_raw_col = _grad_through_softplus(grad_col_thresh, raw_col)
+
+    grad = np.concatenate(([grad_rho], grad_raw_row, grad_raw_col))
+    return float(nll), grad
 
 
 def compute_degrees_of_freedom(n_row: int, n_col: int) -> int:
@@ -203,7 +392,13 @@ def compute_degrees_of_freedom(n_row: int, n_col: int) -> int:
 
 
 def compute_chi_square(nll: float, tab: np.ndarray, n_total: float) -> float:
-    return 2.0 * (nll + np.sum(tab * np.log((tab + EPS) / n_total)))
+    # Use the convention 0 · log 0 = 0 explicitly in the saturated term:
+    # adding EPS inside log(tab / n_total) inflates the LR statistic whenever
+    # any cell is zero. The model term equals -nll, where the NLL is computed
+    # under the same convention in negative_log_likelihood, keeping the two
+    # halves of the LR statistic consistent.
+    sat = np.where(tab > 0, tab * np.log(tab / n_total), 0.0)
+    return 2.0 * (np.sum(sat) + nll)
 
 
 def compute_standard_error_ml(opt_result: Any,
@@ -214,34 +409,88 @@ def compute_standard_error_ml(opt_result: Any,
                               default_col_thresh: np.ndarray,
                               maxcor: float) -> Optional[float]:
     """
-    Curvature-based variance estimate for rho at the ML solution, holding thresholds fixed.
-    Not full profile-likelihood.
+    Observed-information SE for rho at the joint ML solution.
+
+    Forms the full observed-information matrix (Hessian of the negative
+    log-likelihood) on the joint parameter vector — rho together with the
+    unconstrained threshold parameters — by central finite differences
+    (diagonal second differences plus 4-point mixed partials), inverts it,
+    and returns the (rho, rho) entry of the inverse. This is the marginal
+    variance of rho that accounts for joint uncertainty in the thresholds,
+    so 1 / H_{rho,rho} is NOT used (it would systematically underestimate
+    variance whenever rho and the thresholds are correlated under H, which
+    is the generic case).
     """
     try:
-        p = np.asarray(opt_result.x, dtype=float)
-        rho_hat = float(p[0])
-        row_hat = p[1:n_row]
-        col_hat = p[n_row:n_row + n_col - 1]
+        p_hat = np.asarray(opt_result.x, dtype=float).copy()
+        rho_hat = float(p_hat[0])
+        n_params = p_hat.size
+        # Optimizer parameter layout (same as negative_log_likelihood expects):
+        #   p[0]                            = rho
+        #   p[1 : n_row]                    = raw row threshold params
+        #   p[n_row : n_row + n_col - 1]    = raw col threshold params
+        # Thresholds are reconstructed from the raw params via softplus inside
+        # negative_log_likelihood, so the Hessian is taken with respect to the
+        # unconstrained parameterization the optimizer actually used.
 
-        h = max(1e-4, 1e-2 * (1.0 - abs(rho_hat)))
-
-        def nll_at(r: float) -> float:
-            r = float(np.clip(r, -maxcor, maxcor))
+        def nll_at(p: np.ndarray) -> float:
+            q = p.copy()
+            # Keep rho strictly inside the admissible region for the BVN CDF.
+            q[0] = float(np.clip(q[0], -maxcor, maxcor))
             return negative_log_likelihood(
-                np.concatenate(([r], row_hat, col_hat)),
-                tab, n_row, n_col, default_row_thresh, default_col_thresh,
+                q, tab, n_row, n_col,
+                default_row_thresh, default_col_thresh,
                 maxcor, full_ml=True
             )
 
-        f0 = nll_at(rho_hat)
-        f1 = nll_at(rho_hat + h)
-        f2 = nll_at(rho_hat - h)
-        d2f = (f1 - 2.0 * f0 + f2) / (h * h)
-        if d2f <= 0 or not np.isfinite(d2f):
+        # Per-parameter step sizes. For rho the step shrinks near the bounds
+        # so rho ± h stays inside (-maxcor, maxcor); for the unconstrained
+        # threshold raw params the step is scaled to their magnitude.
+        h = np.empty(n_params)
+        h[0] = max(1e-4, 1e-2 * (1.0 - abs(rho_hat)))
+        for i in range(1, n_params):
+            h[i] = 1e-4 * max(1.0, abs(p_hat[i]))
+
+        f0 = nll_at(p_hat)
+        H = np.empty((n_params, n_params))
+
+        # Diagonal entries: central second differences.
+        for i in range(n_params):
+            ei = np.zeros(n_params)
+            ei[i] = h[i]
+            f_p = nll_at(p_hat + ei)
+            f_m = nll_at(p_hat - ei)
+            H[i, i] = (f_p - 2.0 * f0 + f_m) / (h[i] * h[i])
+
+        # Off-diagonal entries: 4-point mixed central differences.
+        for i in range(n_params):
+            ei = np.zeros(n_params)
+            ei[i] = h[i]
+            for j in range(i + 1, n_params):
+                ej = np.zeros(n_params)
+                ej[j] = h[j]
+                f_pp = nll_at(p_hat + ei + ej)
+                f_pm = nll_at(p_hat + ei - ej)
+                f_mp = nll_at(p_hat - ei + ej)
+                f_mm = nll_at(p_hat - ei - ej)
+                H[i, j] = (f_pp - f_pm - f_mp + f_mm) / (4.0 * h[i] * h[j])
+                H[j, i] = H[i, j]
+
+        if not np.all(np.isfinite(H)):
             return None
-        return 1.0 / d2f
+
+        # Invert the observed-information matrix; (0, 0) entry is Var(rho).
+        try:
+            H_inv = np.linalg.inv(H)
+        except np.linalg.LinAlgError:
+            return None
+
+        var_rho = float(H_inv[0, 0])
+        if not np.isfinite(var_rho) or var_rho <= 0:
+            return None
+        return var_rho
     except Exception as e:
-        logger.warning(f"Failed to compute curvature SE for rho: {e}")
+        logger.warning(f"Failed to compute observed-information SE for rho: {e}")
         try:
             hess_inv = opt_result.hess_inv.todense() if hasattr(opt_result.hess_inv, "todense") else opt_result.hess_inv
             var_rho = float(hess_inv[0, 0])
@@ -270,9 +519,24 @@ def preprocess_data(x: Union[np.ndarray, list],
         if x_array.size == 0 or y_array.size == 0:
             raise ParameterError("No valid observations after removing NaNs.")
 
-        if _is_small_integer_ordinal(x_array) and _is_small_integer_ordinal(y_array):
+        x_is_ordinal = _is_small_integer_ordinal(x_array)
+        y_is_ordinal = _is_small_integer_ordinal(y_array)
+        if x_is_ordinal and y_is_ordinal:
             tab = _crosstab_codes(np.rint(x_array).astype(int), np.rint(y_array).astype(int))
         else:
+            non_ordinal = []
+            if not x_is_ordinal:
+                non_ordinal.append("x")
+            if not y_is_ordinal:
+                non_ordinal.append("y")
+            warnings.warn(
+                f"Input variable(s) {', '.join(non_ordinal)} do not appear to be "
+                f"integer-coded ordinals; binning into {bins} bins per axis via "
+                f"np.histogram2d. For more reliable results, either pass "
+                f"integer-coded ordinal data or set the `bins` argument explicitly.",
+                UserWarning,
+                stacklevel=2,
+            )
             tab, _, _ = np.histogram2d(x_array, y_array, bins=[bins, bins])
 
     valid_rows = ~np.all(tab == 0, axis=1)
@@ -371,14 +635,22 @@ def polychoric_correlation(x: Union[np.ndarray, list],
             init_rho = float(res_prelim.x)
             logger.debug(f"Preliminary optimization for rho yielded: {init_rho:.6f}")
 
-        initial_params = np.concatenate(([init_rho], init_row_thresh, init_col_thresh)).astype(float)
-        bounds = [(-maxcor, maxcor)] + [(-THRESH_BOUND, THRESH_BOUND)] * ((n_row - 1) + (n_col - 1))
+        initial_params = np.concatenate((
+            [init_rho],
+            _deconstruct_thresholds(init_row_thresh),
+            _deconstruct_thresholds(init_col_thresh),
+        )).astype(float)
+        # rho stays bounded; threshold raw params (tau_1 and the deltas) are
+        # unconstrained because monotonicity is enforced by the softplus
+        # reconstruction inside negative_log_likelihood.
+        bounds = [(-maxcor, maxcor)] + [(None, None)] * ((n_row - 1) + (n_col - 1))
 
         opt_result = minimize(
-            negative_log_likelihood,
+            _negative_log_likelihood_and_grad,
             initial_params,
-            args=(tab, n_row, n_col, default_row_thresh, default_col_thresh, maxcor, True),
+            args=(tab, n_row, n_col),
             method='L-BFGS-B',
+            jac=True,
             bounds=bounds,
             options={'maxiter': maxiter, 'ftol': tol}
         )
@@ -387,8 +659,8 @@ def polychoric_correlation(x: Union[np.ndarray, list],
 
         est_params = np.asarray(opt_result.x, dtype=float)
         est_rho = float(est_params[0])
-        est_row_thresh = est_params[1:n_row]
-        est_col_thresh = est_params[n_row:n_row + n_col - 1]
+        est_row_thresh = _reconstruct_thresholds(est_params[1:n_row], n_row)
+        est_col_thresh = _reconstruct_thresholds(est_params[n_row:n_row + n_col - 1], n_col)
 
         nll = float(opt_result.fun)
         chisq = compute_chi_square(nll, tab, n_total)
@@ -534,7 +806,8 @@ def polychoric_corr_matrix(
                         **polychor_kwargs
                     ))
                     corr[i, j] = corr[j, i] = r
-            except Exception:
+            except Exception as exc:
+                logger.warning(f"polychoric pair ({i}, {j}) failed: {exc!r}")
                 continue
 
     if compute_std_err:
@@ -542,9 +815,16 @@ def polychoric_corr_matrix(
     return corr, labels
 
 
-def reorder_by_clustering(corr, labels):
+def reorder_by_clustering(corr, labels, signed_distance: bool = False):
     """
-    Reorder variables using hierarchical clustering on distance = 1 - corr.
+    Reorder variables using hierarchical clustering.
+
+    By default, the distance is ``1 - |corr|``, which groups variables by
+    association strength regardless of sign (strongly anti-correlated
+    variables are treated as similar). Set ``signed_distance=True`` to use
+    the legacy ``1 - corr`` distance, where strongly anti-correlated
+    variables are treated as maximally distant.
+
     Requires SciPy.
     """
     from scipy.cluster.hierarchy import linkage, leaves_list
@@ -554,8 +834,16 @@ def reorder_by_clustering(corr, labels):
     C = np.where(np.isfinite(C), C, 0.0)
     np.fill_diagonal(C, 1.0)
 
-    D = 1.0 - C
+    if signed_distance:
+        D = 1.0 - C
+    else:
+        D = 1.0 - np.abs(C)
     np.fill_diagonal(D, 0.0)
+
+    # Symmetrize to absorb floating-point roundoff so squareform's
+    # symmetry check (and downstream linkage) sees an exactly symmetric
+    # distance matrix.
+    D = 0.5 * (D + D.T)
 
     Z = linkage(squareform(D, checks=False), method="average")
     order = leaves_list(Z)
